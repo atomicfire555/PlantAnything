@@ -42,25 +42,21 @@ jobs:
           key: vcpkg-${{ env.TRIPLET }}-${{ env.COMMONLIB_TAG }}-${{ hashFiles('extern/CommonLibSSE-NG/vcpkg.json') }}
           restore-keys: vcpkg-${{ env.TRIPLET }}-
 
-      - name: Install dependencies
+      - name: Use CommonLib's vcpkg manifest
         shell: pwsh
         run: |
+          Copy-Item extern/CommonLibSSE-NG/vcpkg.json .
+          Copy-Item extern/CommonLibSSE-NG/vcpkg-configuration.json .
           New-Item -ItemType Directory -Force vcpkg_binary_cache | Out-Null
-          & "${{ github.workspace }}/vcpkg/vcpkg" install `
-            --triplet=$env:TRIPLET `
-            --x-manifest-root=extern/CommonLibSSE-NG `
-            --x-install-root="${{ github.workspace }}/vcpkg_installed" `
-            --x-no-default-features
 
-      - name: Configure
+      - name: Configure (installs dependencies)
         shell: pwsh
         run: |
           cmake -B build -S . -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
-            -DVCPKG_MANIFEST_MODE=OFF `
             -DVCPKG_TARGET_TRIPLET=$env:TRIPLET `
-            -DVCPKG_INSTALLED_DIR="${{ github.workspace }}/vcpkg_installed"
+            -DVCPKG_MANIFEST_NO_DEFAULT_FEATURES=ON
 
       - name: Build
         run: cmake --build build --config Release

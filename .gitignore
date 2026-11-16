@@ -1,3 +1,5 @@
 build/
 extern/
 vcpkg_installed/
+vcpkg/
+vcpkg_binary_cache/
