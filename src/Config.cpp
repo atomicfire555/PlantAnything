@@ -79,7 +79,7 @@ void Config::Load()
 			else if (key == "brandomvariant") randomVariant = ParseBool(val);
 			else if (key == "ballowuproot") allowUproot = ParseBool(val);
 			else if (key == "bshowmessages") showMessages = ParseBool(val);
-			else if (key == "fregrowdays") regrowDays = std::max(0.0f, std::stof(val));
+			else if (key == "fregrowdays") regrowDays = (std::max)(0.0f, std::stof(val));
 			else if (key == "fsproutdelayseconds") sproutDelay = std::clamp(std::stof(val), 0.0f, 30.0f);
 			else if (key == "fsinkdepth") sinkDepth = std::stof(val);
 			else if (key == "sexcludedplugins") {

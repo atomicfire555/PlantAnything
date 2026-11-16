@@ -41,9 +41,9 @@ namespace
 	// Fraction of positions where flora[i] actually produces items[i].
 	std::size_t AlignedMatches(RE::BGSListForm* a_items, RE::BGSListForm* a_flora)
 	{
-		const auto n = std::min(a_items->forms.size(), a_flora->forms.size());
+		const auto n = (std::min)(a_items->forms.size(), a_flora->forms.size());
 		std::size_t matches = 0;
-		for (std::uint32_t i = 0; i < n; ++i) {
+		for (decltype(n) i = 0; i < n; ++i) {
 			auto* item = a_items->forms[i];
 			auto* plant = a_flora->forms[i];
 			if (item && plant && PlantRegistry::Produces(plant, item->GetFormID())) {
@@ -92,7 +92,7 @@ namespace
 			for (auto* flora : floraLists) {
 				const auto n = items->forms.size();
 				const auto matches = AlignedMatches(items, flora);
-				if (matches < 3 || matches * 10 < std::min<std::size_t>(n, flora->forms.size()) * 6) {
+				if (matches < 3 || matches * 10 < (std::min<std::size_t>)(n, flora->forms.size()) * 6) {
 					continue;  // not a parallel list
 				}
 				if (flora->forms.size() != n) {
