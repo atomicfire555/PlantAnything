@@ -41,9 +41,9 @@ namespace
 	// Fraction of positions where flora[i] actually produces items[i].
 	std::size_t AlignedMatches(RE::BGSListForm* a_items, RE::BGSListForm* a_flora)
 	{
-		const auto n = (std::min)(a_items->forms.size(), a_flora->forms.size());
+		const auto n = static_cast<std::uint32_t>((std::min)(a_items->forms.size(), a_flora->forms.size()));
 		std::size_t matches = 0;
-		for (decltype(n) i = 0; i < n; ++i) {
+		for (std::uint32_t i = 0; i < n; ++i) {
 			auto* item = a_items->forms[i];
 			auto* plant = a_flora->forms[i];
 			if (item && plant && PlantRegistry::Produces(plant, item->GetFormID())) {
