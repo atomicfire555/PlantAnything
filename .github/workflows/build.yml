@@ -29,6 +29,9 @@ jobs:
         with:
           arch: x64
 
+      - name: Setup Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
       - name: Setup vcpkg (at CommonLib's baseline)
         uses: lukka/run-vcpkg@v11
         with:
@@ -55,7 +58,7 @@ jobs:
           cmake -B build -S . -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=$env:TRIPLET `
+            "-DVCPKG_TARGET_TRIPLET=$env:TRIPLET" `
             -DVCPKG_MANIFEST_NO_DEFAULT_FEATURES=ON
 
       - name: Build
