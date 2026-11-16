@@ -1,0 +1,80 @@
+name: Build
+
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  COMMONLIB_TAG: v16.5.0
+  TRIPLET: x64-windows-static-md
+  VCPKG_BINARY_SOURCES: "clear;files,${{ github.workspace }}/vcpkg_binary_cache,readwrite"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get CommonLibSSE-NG
+        shell: pwsh
+        run: git clone --depth 1 --branch $env:COMMONLIB_TAG --recurse-submodules --shallow-submodules https://github.com/alandtse/CommonLibVR extern/CommonLibSSE-NG
+
+      - name: Setup MSVC
+        uses: TheMrMilchmann/setup-msvc-dev@v4.0.0
+        with:
+          arch: x64
+
+      - name: Setup vcpkg (at CommonLib's baseline)
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgJsonGlob: 'extern/CommonLibSSE-NG/vcpkg.json'
+          runVcpkgInstall: false
+
+      - name: Cache vcpkg packages
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/vcpkg_binary_cache
+          key: vcpkg-${{ env.TRIPLET }}-${{ env.COMMONLIB_TAG }}-${{ hashFiles('extern/CommonLibSSE-NG/vcpkg.json') }}
+          restore-keys: vcpkg-${{ env.TRIPLET }}-
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force vcpkg_binary_cache | Out-Null
+          & "${{ github.workspace }}/vcpkg/vcpkg" install `
+            --triplet=$env:TRIPLET `
+            --x-manifest-root=extern/CommonLibSSE-NG `
+            --x-install-root=vcpkg_installed `
+            --x-no-default-features
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -B build -S . -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+            -DVCPKG_MANIFEST_MODE=OFF `
+            -DVCPKG_TARGET_TRIPLET=$env:TRIPLET `
+            -DVCPKG_INSTALLED_DIR="${{ github.workspace }}/vcpkg_installed"
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Package (MO2-ready layout)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force package/SKSE/Plugins | Out-Null
+          Copy-Item build/PlantAnything.dll package/SKSE/Plugins/
+          Copy-Item build/PlantAnything.pdb package/SKSE/Plugins/ -ErrorAction SilentlyContinue
+          Copy-Item dist/SKSE/Plugins/PlantAnything.ini package/SKSE/Plugins/
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: PlantAnything
+          path: package/
