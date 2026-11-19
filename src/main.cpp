@@ -6,7 +6,7 @@
 
 // One DLL for SE 1.5.97 and AE (Address Library). Also exports SKSEPlugin_Query for SE.
 SKSEPluginInfo(
-	.Version = REL::Version{ 1, 1, 0, 0 },
+	.Version = REL::Version{ 1, 2, 0, 0 },
 	.Name = "PlantAnything"sv,
 	.Author = "PlantAnything"sv,
 	.StructCompatibility = SKSE::StructCompatibility::Independent,
@@ -31,12 +31,25 @@ namespace
 
 	void OnMessage(SKSE::MessagingInterface::Message* a_msg)
 	{
-		if (a_msg && a_msg->type == SKSE::MessagingInterface::kDataLoaded) {
+		if (!a_msg) {
+			return;
+		}
+		switch (a_msg->type) {
+		case SKSE::MessagingInterface::kDataLoaded:
 			PlantRegistry::GetSingleton()->Build();
-			SoilPatcher::Run();
 			if (Config::enableDropPlanting) {
 				Events::Register();
 			}
+			break;
+		case SKSE::MessagingInterface::kPostLoadGame:
+		case SKSE::MessagingInterface::kNewGame:
+			// Script-added FormList entries come back from the save here, so the soil
+			// lists can only be lined up now. Safe to repeat on every load.
+			spdlog::info("--- Game loaded: patching fertile soil ---");
+			SoilPatcher::Run();
+			break;
+		default:
+			break;
 		}
 	}
 
