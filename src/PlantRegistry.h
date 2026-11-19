@@ -18,6 +18,11 @@ public:
 	[[nodiscard]] RE::TESBoundObject* PickPlant(RE::FormID a_item) const;
 	[[nodiscard]] RE::TESBoundObject* PickPlantForSoil(RE::FormID a_item) const;  // prefers small FLOR over TREE
 	[[nodiscard]] std::vector<RE::FormID> SortedItems() const;
+	[[nodiscard]] const std::vector<RE::TESBoundObject*>* Variants(RE::FormID a_item) const
+	{
+		const auto it = _map.find(a_item);
+		return it == _map.end() ? nullptr : &it->second;
+	}
 
 	// Does this flora/tree base produce a_item (directly or through leveled lists)?
 	static bool Produces(RE::TESForm* a_plant, RE::FormID a_item);

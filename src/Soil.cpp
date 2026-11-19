@@ -2,66 +2,59 @@
 #include "Config.h"
 #include "PlantRegistry.h"
 
-// Papyrus sees a FormList in this order (CK wiki, "AddForm - FormList"):
-//   [script-added forms created at runtime (0xFF..)] [forms defined in plugins] [other script-added forms]
-// Script-added forms are restored from the save, so the lists can only be lined up
-// AFTER a save has loaded. We insert our entries into the plugin-defined part of every
-// parallel list at the SAME position (the smallest plugin-defined size in the group), so
-// everything after that point - including other mods' script-added entries - shifts by the
-// same amount in every list and stays paired.
+// Fertile soil = a planter script (vanilla: BYOHPlanterContainerScript) whose properties point
+// at an item FormList and one or more flora FormLists that are read index-for-index:
+//   flPlanterPlantableItem[i]  ->  flPlanterPlantedFlora[i]   (CACO adds ...PlantedFloraFertilized)
+//
+// After a save loads we ask the Papyrus VM which lists those scripts really use, repair any
+// item that has no plant at its index, then add every missing plantable at the same index in
+// all of the group's lists. If no planter scripts are found we fall back to matching lists.
 
 namespace
 {
+	std::string Lower(std::string_view a_str)
+	{
+		std::string out(a_str);
+		std::ranges::transform(out, out.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		return out;
+	}
+
+	// What Papyrus GetAt() sees, index for index: [runtime-created script adds][forms].
+	// (Script-added forms from plugins live in `forms` itself, after the plugin entries.)
 	struct ListView
 	{
 		RE::BGSListForm*          list{ nullptr };
-		std::vector<RE::TESForm*> view;  // what Papyrus GetAt() sees, index for index
-		std::uint32_t             staticCount{ 0 };
-		std::uint32_t             addedCount{ 0 };
-		bool                      hasRuntimeForms{ false };
-	};
-
-	struct PlanterGroup
-	{
-		ListView              items;
-		std::vector<ListView> floraLists;
+		std::vector<RE::TESForm*> view;
+		std::uint32_t             tempCount{ 0 };
 	};
 
 	ListView MakeView(RE::BGSListForm* a_list)
 	{
 		ListView v;
 		v.list = a_list;
-		v.staticCount = a_list->forms.size();
-
-		std::vector<RE::TESForm*> runtimeAdded, normalAdded;
 		if (a_list->scriptAddedTempForms) {
 			for (const auto id : *a_list->scriptAddedTempForms) {
-				auto* form = RE::TESForm::LookupByID(id);
-				if ((id >> 24) == 0xFF) {
-					runtimeAdded.push_back(form);
-				} else {
-					normalAdded.push_back(form);
-				}
+				v.view.push_back(RE::TESForm::LookupByID(id));
+				++v.tempCount;
 			}
 		}
-		v.addedCount = static_cast<std::uint32_t>(runtimeAdded.size() + normalAdded.size());
-		v.hasRuntimeForms = !runtimeAdded.empty();
-
-		v.view.reserve(runtimeAdded.size() + v.staticCount + normalAdded.size());
-		v.view.insert(v.view.end(), runtimeAdded.begin(), runtimeAdded.end());
 		for (auto* form : a_list->forms) {
 			v.view.push_back(form);  // keep nulls: they still take an index
 		}
-		v.view.insert(v.view.end(), normalAdded.begin(), normalAdded.end());
 		return v;
 	}
 
-	std::string Describe(const ListView& a_v)
+	std::string Describe(RE::BGSListForm* a_list)
 	{
-		auto* file = a_v.list->GetFile(0);
-		return std::format("{} [{:08X}] ({} = {} plugin + {} script-added)",
-			file ? std::string(file->GetFilename()) : "<runtime>"s, a_v.list->GetFormID(),
-			a_v.view.size(), a_v.staticCount, a_v.addedCount);
+		auto* file = a_list->GetFile(0);
+		const auto v = MakeView(a_list);
+		return std::format("{} [{:08X}] ({} entries{})", file ? std::string(file->GetFilename()) : "<runtime>"s,
+			a_list->GetFormID(), v.view.size(), v.tempCount ? std::format(", {} runtime", v.tempCount) : ""s);
+	}
+
+	std::string NameOf(RE::TESForm* a_form)
+	{
+		return a_form ? std::format("{} [{:08X}]", a_form->GetName(), a_form->GetFormID()) : "None"s;
 	}
 
 	bool IsPlantForm(RE::TESForm* a_form)
@@ -73,11 +66,96 @@ namespace
 		return type == RE::FormType::Flora || type == RE::FormType::Tree;
 	}
 
-	template <class Pred>
-	std::size_t CountIf(const ListView& a_v, Pred a_pred)
+	struct PlanterGroup
 	{
-		return static_cast<std::size_t>(std::ranges::count_if(a_v.view, a_pred));
+		RE::BGSListForm*              items{ nullptr };
+		std::vector<RE::BGSListForm*> floraLists;
+	};
+
+	// ------------------------------------------------------------ 1) ask the VM
+
+	std::vector<PlanterGroup> FindFromScripts()
+	{
+		std::vector<PlanterGroup> groups;
+		auto*                     vm = RE::BSScript::Internal::VirtualMachine::GetSingleton();
+		if (!vm) {
+			return groups;
+		}
+
+		struct Seen
+		{
+			std::string                   script;
+			std::size_t                   instances{ 0 };
+			std::vector<RE::BGSListForm*> flora;
+		};
+		std::unordered_map<RE::BGSListForm*, Seen> byItems;  // item list -> flora lists read with it
+		std::vector<RE::BGSListForm*>              order;
+
+		{
+			RE::BSSpinLockGuard locker(vm->attachedScriptsLock);
+			for (auto& [handle, scripts] : vm->attachedScripts) {
+				for (auto& attached : scripts) {
+					auto* obj = attached.get();
+					auto* type = obj ? obj->GetTypeInfo() : nullptr;
+					if (!type || !type->GetName()) {
+						continue;
+					}
+					const auto scriptName = Lower(type->GetName());
+					if (scriptName.find("planter") == std::string::npos) {
+						continue;
+					}
+
+					RE::BGSListForm*              items = nullptr;
+					std::vector<RE::BGSListForm*> flora;
+					auto*                         props = type->GetPropertyIter();
+					for (std::uint32_t i = 0; props && i < type->GetNumProperties(); ++i) {
+						const auto propName = Lower(props[i].name.c_str());
+						auto*      var = obj->GetProperty(props[i].name);
+						if (!var || !var->IsObject()) {
+							continue;
+						}
+						auto* list = var->Unpack<RE::BGSListForm*>();
+						if (!list) {
+							continue;
+						}
+						if (propName.find("plantableitem") != std::string::npos) {
+							items = list;
+						} else if (propName.find("plantedflora") != std::string::npos) {
+							flora.push_back(list);
+						}
+					}
+					if (!items || flora.empty()) {
+						continue;
+					}
+
+					auto [it, inserted] = byItems.try_emplace(items);
+					if (inserted) {
+						it->second.script = type->GetName();
+						order.push_back(items);
+					}
+					++it->second.instances;
+					for (auto* f : flora) {
+						if (std::ranges::find(it->second.flora, f) == it->second.flora.end()) {
+							it->second.flora.push_back(f);
+						}
+					}
+				}
+			}
+		}
+
+		for (auto* items : order) {
+			const auto& seen = byItems[items];
+			spdlog::info("Planter script '{}' ({} soil plot(s)) reads:", seen.script, seen.instances);
+			spdlog::info("    items {}", Describe(items));
+			for (auto* f : seen.flora) {
+				spdlog::info("    flora {}", Describe(f));
+			}
+			groups.push_back(PlanterGroup{ items, seen.flora });
+		}
+		return groups;
 	}
+
+	// ------------------------------------------------------------ 2) fallback: match lists
 
 	std::size_t AlignedMatches(const ListView& a_items, const ListView& a_flora)
 	{
@@ -93,100 +171,181 @@ namespace
 		return matches;
 	}
 
-	std::vector<PlanterGroup> FindPlanterGroups()
+	std::vector<PlanterGroup> FindByMatching()
 	{
-		auto& lists = RE::TESDataHandler::GetSingleton()->GetFormArray<RE::BGSListForm>();
-
+		auto&                 lists = RE::TESDataHandler::GetSingleton()->GetFormArray<RE::BGSListForm>();
 		std::vector<ListView> itemLists, floraLists;
 		for (auto* list : lists) {
 			if (!list) {
 				continue;
 			}
-			auto v = MakeView(list);
+			auto       v = MakeView(list);
 			const auto size = v.view.size();
 			if (size < 3) {
 				continue;
 			}
-			if (CountIf(v, PlantRegistry::IsHarvestItem) * 10 >= size * 8) {
+			const auto harvest = static_cast<std::size_t>(std::ranges::count_if(v.view, PlantRegistry::IsHarvestItem));
+			const auto plants = static_cast<std::size_t>(std::ranges::count_if(v.view, IsPlantForm));
+			if (harvest * 10 >= size * 8) {
 				itemLists.push_back(std::move(v));
-			} else if (CountIf(v, IsPlantForm) * 10 >= size * 8) {
+			} else if (plants * 10 >= size * 5) {
 				floraLists.push_back(std::move(v));
 			}
 		}
 
-		const auto skipped = Config::ResolveSkippedPlanterLists();
-
-		std::vector<PlanterGroup>                         groups;
-		std::unordered_map<RE::BGSListForm*, std::size_t> floraOwner;
+		std::vector<PlanterGroup> groups;
 		for (auto& items : itemLists) {
-			if (skipped.contains(items.list->GetFormID())) {
-				spdlog::info("Skipping planter item list {} (sSkipPlanterLists)", Describe(items));
-				continue;
-			}
-			PlanterGroup group{ items, {} };
+			PlanterGroup group{ items.list, {} };
 			for (auto& flora : floraLists) {
-				const auto n = (std::min)(items.view.size(), flora.view.size());
 				const auto matches = AlignedMatches(items, flora);
-				if (matches < 3 || matches * 10 < n * 6) {
-					continue;  // not a parallel list
+				if (matches >= 10 && flora.view.size() == items.view.size()) {
+					group.floraLists.push_back(flora.list);
+				} else if (matches >= 10) {
+					spdlog::info("  (not used) {} vs {}: {} matching positions", Describe(items.list), Describe(flora.list), matches);
 				}
-				if (flora.view.size() != items.view.size()) {
-					spdlog::warn("Planter lists look paired but are out of step already, not touching them:");
-					spdlog::warn("    items {}", Describe(items));
-					spdlog::warn("    flora {}", Describe(flora));
-					continue;
-				}
-				group.floraLists.push_back(flora);
-				++floraOwner[flora.list];
 			}
 			if (!group.floraLists.empty()) {
+				spdlog::info("Matched planter lists: items {}", Describe(group.items));
+				for (auto* f : group.floraLists) {
+					spdlog::info("    flora {}", Describe(f));
+				}
 				groups.push_back(std::move(group));
 			}
 		}
-
-		for (auto& group : groups) {
-			std::erase_if(group.floraLists, [&](const ListView& f) {
-				if (floraOwner[f.list] > 1) {
-					spdlog::warn("Flora list {} is paired with more than one item list - skipped", Describe(f));
-					return true;
-				}
-				return false;
-			});
-		}
-		std::erase_if(groups, [](const PlanterGroup& g) { return g.floraLists.empty(); });
-
-		// Runtime-created forms sit in front of the plugin part and would break index math.
-		std::erase_if(groups, [](const PlanterGroup& g) {
-			const bool runtime = g.items.hasRuntimeForms ||
-			                     std::ranges::any_of(g.floraLists, [](const ListView& f) { return f.hasRuntimeForms; });
-			if (runtime) {
-				spdlog::warn("Planter list {} holds runtime-created forms - skipped", Describe(g.items));
-			}
-			return runtime;
-		});
 		return groups;
 	}
 
-	void InsertAt(RE::BGSListForm* a_list, std::uint32_t a_pos, const std::vector<RE::TESForm*>& a_add)
+	// ------------------------------------------------------------ patching
+
+	// A plant for a_item that is not already in any of the group's flora lists (FormLists
+	// drop duplicates when the game restores them, which would knock the lists out of step).
+	RE::TESBoundObject* PickUniquePlant(RE::FormID a_item, const PlanterGroup& a_group, const std::unordered_set<RE::TESForm*>& a_used)
 	{
+		const auto* variants = PlantRegistry::GetSingleton()->Variants(a_item);
+		if (!variants) {
+			return nullptr;
+		}
+		auto usable = [&](RE::TESBoundObject* p) {
+			if (a_used.contains(p)) {
+				return false;
+			}
+			return std::ranges::none_of(a_group.floraLists, [&](RE::BGSListForm* f) { return f->HasForm(p); });
+		};
+		for (auto* p : *variants) {
+			if (p->GetFormType() == RE::FormType::Flora && usable(p)) {
+				return p;
+			}
+		}
+		for (auto* p : *variants) {
+			if (usable(p)) {
+				return p;
+			}
+		}
+		return nullptr;
+	}
+
+	void InsertAt(RE::BGSListForm* a_list, std::size_t a_viewPos, const std::vector<RE::TESForm*>& a_add)
+	{
+		const auto temp = MakeView(a_list).tempCount;
+		const auto pos = a_viewPos >= temp ? a_viewPos - temp : 0;
+
 		std::vector<RE::TESForm*> old(a_list->forms.begin(), a_list->forms.end());
 		a_list->forms.clear();
-		a_list->forms.reserve(static_cast<std::uint32_t>(old.size() + a_add.size()));
-		for (std::uint32_t i = 0; i < a_pos && i < old.size(); ++i) {
+		for (std::size_t i = 0; i < pos && i < old.size(); ++i) {
 			a_list->forms.push_back(old[i]);
 		}
 		for (auto* form : a_add) {
 			a_list->forms.push_back(form);
 		}
-		for (std::size_t i = a_pos; i < old.size(); ++i) {
+		for (std::size_t i = pos; i < old.size(); ++i) {
 			a_list->forms.push_back(old[i]);
 		}
 	}
 
-	std::string NameAt(const ListView& a_v, std::size_t a_i)
+	void PatchGroup(const PlanterGroup& a_group)
 	{
-		auto* f = a_i < a_v.view.size() ? a_v.view[a_i] : nullptr;
-		return f ? std::format("{} [{:08X}]", f->GetName(), f->GetFormID()) : "None"s;
+		auto*                              registry = PlantRegistry::GetSingleton();
+		std::unordered_set<RE::TESForm*> used;
+
+		// A) Repair: give every existing item a plant at its own index.
+		{
+			const auto items = MakeView(a_group.items);
+			for (auto* floraList : a_group.floraLists) {
+				const auto flora = MakeView(floraList);
+				if (flora.view.size() >= items.view.size()) {
+					continue;
+				}
+				std::vector<RE::TESForm*> fill;
+				for (std::size_t i = flora.view.size(); i < items.view.size(); ++i) {
+					auto* item = items.view[i];
+					RE::TESForm* plant = item ? PickUniquePlant(item->GetFormID(), a_group, used) : nullptr;
+					if (!plant && item) {
+						// Nothing unique: reuse any plant for it so the indices still line up.
+						if (const auto* v = registry->Variants(item->GetFormID()); v && !v->empty()) {
+							plant = v->front();
+						}
+					}
+					if (!plant) {
+						plant = flora.view.empty() ? nullptr : flora.view.front();
+					}
+					fill.push_back(plant);
+					if (plant) {
+						used.insert(plant);
+					}
+					spdlog::info("    repair [{}] {} -> {}", i, NameOf(item), NameOf(plant));
+				}
+				InsertAt(floraList, flora.view.size(), fill);
+				spdlog::info("  Repaired {}: added {} missing plants", Describe(floraList), fill.size());
+			}
+		}
+
+		// B) Add every missing plantable at the same index in every list.
+		const auto                pos = MakeView(a_group.items).view.size();
+		std::vector<RE::TESForm*> addItems, addPlants;
+		for (const auto itemID : registry->SortedItems()) {
+			auto* item = RE::TESForm::LookupByID(itemID);
+			if (!item || a_group.items->HasForm(item)) {
+				continue;
+			}
+			auto* plant = PickUniquePlant(itemID, a_group, used);
+			if (!plant) {
+				spdlog::info("    skip {}: its plant is already used by another entry", NameOf(item));
+				continue;
+			}
+			used.insert(plant);
+			addItems.push_back(item);
+			addPlants.push_back(plant);
+		}
+
+		if (addItems.empty()) {
+			spdlog::info("  Nothing new to add");
+		} else {
+			InsertAt(a_group.items, pos, addItems);
+			for (auto* f : a_group.floraLists) {
+				InsertAt(f, pos, addPlants);
+			}
+			for (std::size_t i = 0; i < addItems.size(); ++i) {
+				spdlog::info("    + [{}] {} -> {}", pos + i, NameOf(addItems[i]), NameOf(addPlants[i]));
+			}
+			spdlog::info("  Added {} new plantables at index {}", addItems.size(), pos);
+		}
+
+		// C) Verify.
+		const auto items = MakeView(a_group.items);
+		for (auto* f : a_group.floraLists) {
+			const auto flora = MakeView(f);
+			std::size_t bad = 0;
+			for (std::size_t i = 0; i < items.view.size(); ++i) {
+				auto* plant = i < flora.view.size() ? flora.view[i] : nullptr;
+				if (!plant || (items.view[i] && IsPlantForm(plant) && !PlantRegistry::Produces(plant, items.view[i]->GetFormID()))) {
+					if (bad++ < 10) {
+						spdlog::warn("    mismatch [{}] {} -> {}", i, NameOf(items.view[i]), NameOf(plant));
+					}
+				}
+			}
+			spdlog::info("  Check {}: {} items / {} plants, {} position(s) where the plant doesn't give the item",
+				Describe(f), items.view.size(), flora.view.size(), bad);
+		}
 	}
 }
 
@@ -196,75 +355,23 @@ void SoilPatcher::Run()
 		return;
 	}
 
-	const auto groups = FindPlanterGroups();
+	auto groups = FindFromScripts();
 	if (groups.empty()) {
-		spdlog::warn("No fertile-soil planter lists found (is HearthFires.esm loaded?)");
+		spdlog::warn("No planter scripts found in the VM - falling back to matching FormLists");
+		groups = FindByMatching();
+	}
+	if (groups.empty()) {
+		spdlog::warn("No fertile-soil planter lists found");
 		return;
 	}
 
-	auto*      registry = PlantRegistry::GetSingleton();
-	const auto allItems = registry->SortedItems();
-
+	const auto skipped = Config::ResolveSkippedPlanterLists();
 	for (const auto& group : groups) {
-		spdlog::info("Planter list: items {}", Describe(group.items));
-		for (const auto& flora : group.floraLists) {
-			spdlog::info("          -> flora {}", Describe(flora));
-		}
-
-		// Insert point: inside the plugin-defined part of EVERY list in the group.
-		std::uint32_t pos = group.items.staticCount;
-		for (const auto& flora : group.floraLists) {
-			pos = (std::min)(pos, flora.staticCount);
-		}
-
-		// Entries after the insert point (other mods' additions) - logged so pairing can be checked.
-		for (std::size_t i = pos; i < group.items.view.size(); ++i) {
-			std::string line = std::format("    existing [{}] {}", i, NameAt(group.items, i));
-			for (const auto& flora : group.floraLists) {
-				line += " -> " + NameAt(flora, i);
-			}
-			spdlog::info("{}", line);
-		}
-
-		std::vector<RE::TESForm*>              addItems;
-		std::vector<std::vector<RE::TESForm*>> addFlora(group.floraLists.size());
-		for (const auto itemID : allItems) {
-			auto* item = RE::TESForm::LookupByID(itemID);
-			if (!item || group.items.list->HasForm(item)) {
-				continue;  // already plantable here (by plugin or by script)
-			}
-			auto* plant = registry->PickPlantForSoil(itemID);
-			if (!plant) {
-				continue;
-			}
-			addItems.push_back(item);
-			for (auto& v : addFlora) {
-				v.push_back(plant);
-			}
-		}
-
-		if (addItems.empty()) {
-			spdlog::info("  Nothing new to add (already patched)");
+		if (skipped.contains(group.items->GetFormID())) {
+			spdlog::info("Skipping {} (sSkipPlanterLists)", Describe(group.items));
 			continue;
 		}
-
-		InsertAt(group.items.list, pos, addItems);
-		for (std::size_t f = 0; f < group.floraLists.size(); ++f) {
-			InsertAt(group.floraLists[f].list, pos, addFlora[f]);
-		}
-
-		for (std::size_t i = 0; i < addItems.size(); ++i) {
-			spdlog::info("    + [{}] {} [{:08X}] -> plant {:08X}", pos + i, addItems[i]->GetName(),
-				addItems[i]->GetFormID(), addFlora.front()[i]->GetFormID());
-		}
-		spdlog::info("  Inserted {} new plantables at index {}", addItems.size(), pos);
-
-		// Verify every list in the group still lines up.
-		const auto after = MakeView(group.items.list);
-		for (const auto& flora : group.floraLists) {
-			const auto fv = MakeView(flora.list);
-			spdlog::info("  Check: items {} / flora {} -> {}", after.view.size(), fv.view.size(),
-				after.view.size() == fv.view.size() ? "in step" : "OUT OF STEP");
-		}
+		spdlog::info("Patching items {}", Describe(group.items));
+		PatchGroup(group);
 	}
 }

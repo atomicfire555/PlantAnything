@@ -6,7 +6,7 @@
 
 // One DLL for SE 1.5.97 and AE (Address Library). Also exports SKSEPlugin_Query for SE.
 SKSEPluginInfo(
-	.Version = REL::Version{ 1, 2, 0, 0 },
+	.Version = REL::Version{ 1, 3, 0, 0 },
 	.Name = "PlantAnything"sv,
 	.Author = "PlantAnything"sv,
 	.StructCompatibility = SKSE::StructCompatibility::Independent,
