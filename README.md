@@ -28,14 +28,32 @@ already in the soil keeps growing.
 
 In game, nothing changes: activate fertile soil and you'll see the longer list.
 
+## Placeholder plants (PlantAnything.esp)
+Some items only exist on decorative flora: garlic and onion braids, dried
+Elves Ear and Frost Mirriam bundles, food displays. Those meshes hang below
+their attach point, so in a soil plot they spawn underground. Some
+ingredients have no plant at all.
+
+For these items the mod uses placeholder plants from `PlantAnything.esp`
+(ESL-flagged, so it uses no load-order slot). At startup each placeholder is
+given a real crop mesh (Leek for garlic and onion, Potato for roots, Imp Stool
+for mushrooms, Lavender for everything else), named after the item, and set
+so harvesting gives that item. The item-to-placeholder assignments are kept in
+`SKSE/Plugins/PlantAnything_Slots.txt` so planted placeholders stay the same
+plant across launches.
+
+Plots already planted with a hanging decoration by an older version are
+lifted out of the ground when you next see them, so you can harvest them.
+
 ## Requirements
 - SKSE (SE 1.5.97 or AE)
 - Address Library for SKSE Plugins
 - HearthFires.esm (and whatever homestead mods you use)
 
 ## Install
-Put `PlantAnything.dll` and `PlantAnything.ini` in `Data/SKSE/Plugins/`.
-Load order doesn't matter. It works alongside FormList Manipulator patches,
+Install the zip with MO2. It contains `SKSE/Plugins/PlantAnything.dll`,
+`SKSE/Plugins/PlantAnything.ini` and `PlantAnything.esp`. **Enable
+PlantAnything.esp** in the plugin list; load order doesn't matter. It works alongside FormList Manipulator patches,
 because items that are already in a list are skipped.
 
 ## Check what happened

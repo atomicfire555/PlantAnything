@@ -4,7 +4,6 @@
 
 namespace
 {
-	constexpr std::uint32_t kRecordType = 'GRDN';
 	constexpr std::uint32_t kRecordVersion = 1;
 
 	float Now()
@@ -233,32 +232,28 @@ void Garden::Save(SKSE::SerializationInterface* a_intfc)
 	}
 }
 
-void Garden::Load(SKSE::SerializationInterface* a_intfc)
+void Garden::LoadRecord(SKSE::SerializationInterface* a_intfc, std::uint32_t a_version)
 {
 	std::lock_guard l(_lock);
 	_planted.clear();
-
-	std::uint32_t type = 0, version = 0, length = 0;
-	while (a_intfc->GetNextRecordInfo(type, version, length)) {
-		if (type != kRecordType || version != kRecordVersion) {
-			continue;
-		}
-		std::uint32_t count = 0;
-		if (a_intfc->ReadRecordData(&count, sizeof(count)) != sizeof(count)) {
+	if (a_version != kRecordVersion) {
+		return;
+	}
+	std::uint32_t count = 0;
+	if (a_intfc->ReadRecordData(&count, sizeof(count)) != sizeof(count)) {
+		return;
+	}
+	for (std::uint32_t i = 0; i < count; ++i) {
+		RE::FormID id = 0, item = 0;
+		float      day = -1.0f;
+		if (a_intfc->ReadRecordData(&id, sizeof(id)) != sizeof(id) ||
+			a_intfc->ReadRecordData(&item, sizeof(item)) != sizeof(item) ||
+			a_intfc->ReadRecordData(&day, sizeof(day)) != sizeof(day)) {
 			break;
 		}
-		for (std::uint32_t i = 0; i < count; ++i) {
-			RE::FormID id = 0, item = 0;
-			float      day = -1.0f;
-			if (a_intfc->ReadRecordData(&id, sizeof(id)) != sizeof(id) ||
-				a_intfc->ReadRecordData(&item, sizeof(item)) != sizeof(item) ||
-				a_intfc->ReadRecordData(&day, sizeof(day)) != sizeof(day)) {
-				break;
-			}
-			RE::FormID newID = 0, newItem = 0;
-			if (a_intfc->ResolveFormID(id, newID) && a_intfc->ResolveFormID(item, newItem)) {
-				_planted[newID] = Planting{ newItem, day };
-			}
+		RE::FormID newID = 0, newItem = 0;
+		if (a_intfc->ResolveFormID(id, newID) && a_intfc->ResolveFormID(item, newItem)) {
+			_planted[newID] = Planting{ newItem, day };
 		}
 	}
 	spdlog::info("Loaded {} planted plants from co-save", _planted.size());

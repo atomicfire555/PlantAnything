@@ -1,6 +1,7 @@
 #include "Soil.h"
 #include "Config.h"
 #include "PlantRegistry.h"
+#include "SoilPlants.h"
 
 // Fertile soil = a planter script (vanilla: BYOHPlanterContainerScript) whose properties point
 // at an item FormList and one or more flora FormLists that are read index-for-index:
@@ -217,31 +218,31 @@ namespace
 
 	// ------------------------------------------------------------ patching
 
-	// A plant for a_item that is not already in any of the group's flora lists (FormLists
-	// drop duplicates when the game restores them, which would knock the lists out of step).
+	// The plant a_item should grow into: a variant that grows properly in soil and isn't already
+	// in any of the group's flora lists (FormLists drop duplicates when the game restores them,
+	// which would knock the lists out of step), otherwise the item's placeholder plant.
 	RE::TESBoundObject* PickUniquePlant(RE::FormID a_item, const PlanterGroup& a_group, const std::unordered_set<RE::TESForm*>& a_used)
 	{
-		const auto* variants = PlantRegistry::GetSingleton()->Variants(a_item);
-		if (!variants) {
-			return nullptr;
-		}
 		auto usable = [&](RE::TESBoundObject* p) {
-			if (a_used.contains(p)) {
+			if (!p || a_used.contains(p)) {
 				return false;
 			}
 			return std::ranges::none_of(a_group.floraLists, [&](RE::BGSListForm* f) { return f->HasForm(p); });
 		};
-		for (auto* p : *variants) {
-			if (p->GetFormType() == RE::FormType::Flora && usable(p)) {
-				return p;
+		if (const auto* variants = PlantRegistry::GetSingleton()->Variants(a_item)) {
+			for (auto* p : *variants) {
+				if (p->GetFormType() == RE::FormType::Flora && SoilPlants::IsGoodSoilPlant(p) && usable(p)) {
+					return p;
+				}
+			}
+			for (auto* p : *variants) {
+				if (SoilPlants::IsGoodSoilPlant(p) && usable(p)) {
+					return p;
+				}
 			}
 		}
-		for (auto* p : *variants) {
-			if (usable(p)) {
-				return p;
-			}
-		}
-		return nullptr;
+		auto* ph = SoilPlants::Placeholder(a_item);
+		return usable(ph) ? ph : nullptr;
 	}
 
 	void InsertAt(RE::BGSListForm* a_list, std::size_t a_viewPos, const std::vector<RE::TESForm*>& a_add)
@@ -299,17 +300,43 @@ namespace
 			}
 		}
 
+		// A2) Existing entries whose plant can't grow in soil (hanging decorations that spawn
+		//     underground): swap in a proper plant at the same index.
+		{
+			const auto items = MakeView(a_group.items);
+			for (auto* floraList : a_group.floraLists) {
+				const auto flora = MakeView(floraList);
+				const auto n = (std::min)(items.view.size(), flora.view.size());
+				for (std::size_t i = flora.tempCount; i < n; ++i) {
+					auto* item = items.view[i];
+					auto* plant = flora.view[i] ? flora.view[i]->As<RE::TESBoundObject>() : nullptr;
+					if (!item || !plant || !IsPlantForm(plant) || SoilPlants::IsGoodSoilPlant(plant)) {
+						continue;
+					}
+					auto* better = PickUniquePlant(item->GetFormID(), a_group, used);
+					if (!better) {
+						continue;
+					}
+					floraList->forms[static_cast<std::uint32_t>(i - flora.tempCount)] = better;
+					used.insert(better);
+					spdlog::info("    fix [{}] {}: {} -> {}", i, NameOf(item), NameOf(plant), NameOf(better));
+				}
+			}
+		}
+
 		// B) Add every missing plantable at the same index in every list.
 		const auto                pos = MakeView(a_group.items).view.size();
 		std::vector<RE::TESForm*> addItems, addPlants;
-		for (const auto itemID : registry->SortedItems()) {
+		auto allItems = registry->SortedItems();
+		allItems.insert(allItems.end(), SoilPlants::ExtraItems().begin(), SoilPlants::ExtraItems().end());
+		for (const auto itemID : allItems) {
 			auto* item = RE::TESForm::LookupByID(itemID);
 			if (!item || a_group.items->HasForm(item)) {
 				continue;
 			}
 			auto* plant = PickUniquePlant(itemID, a_group, used);
 			if (!plant) {
-				spdlog::info("    skip {}: its plant is already used by another entry", NameOf(item));
+				spdlog::info("    skip {}: no free plant for it", NameOf(item));
 				continue;
 			}
 			used.insert(plant);
@@ -330,20 +357,21 @@ namespace
 			spdlog::info("  Added {} new plantables at index {}", addItems.size(), pos);
 		}
 
-		// C) Verify.
+		// C) Verify: every item needs a plant at its index that grows in soil.
 		const auto items = MakeView(a_group.items);
 		for (auto* f : a_group.floraLists) {
-			const auto flora = MakeView(f);
+			const auto  flora = MakeView(f);
 			std::size_t bad = 0;
 			for (std::size_t i = 0; i < items.view.size(); ++i) {
 				auto* plant = i < flora.view.size() ? flora.view[i] : nullptr;
-				if (!plant || (items.view[i] && IsPlantForm(plant) && !PlantRegistry::Produces(plant, items.view[i]->GetFormID()))) {
-					if (bad++ < 10) {
-						spdlog::warn("    mismatch [{}] {} -> {}", i, NameOf(items.view[i]), NameOf(plant));
+				auto* bound = plant ? plant->As<RE::TESBoundObject>() : nullptr;
+				if (!plant || (IsPlantForm(plant) && !SoilPlants::IsGoodSoilPlant(bound))) {
+					if (bad++ < 20) {
+						spdlog::warn("    won't grow [{}] {} -> {}", i, NameOf(items.view[i]), NameOf(plant));
 					}
 				}
 			}
-			spdlog::info("  Check {}: {} items / {} plants, {} position(s) where the plant doesn't give the item",
+			spdlog::info("  Check {}: {} items / {} plants, {} without a plant that grows in soil",
 				Describe(f), items.view.size(), flora.view.size(), bad);
 		}
 	}

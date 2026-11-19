@@ -5,6 +5,8 @@ struct Config
 {
 	static inline bool  patchFertileSoil = true;    // add everything to Hearthfire / homestead fertile soil
 	static inline bool  enableDropPlanting = false; // optional: sneak-drop an item anywhere to plant it
+	static inline bool  soilAllIngredients = true;  // ingredients no plant gives get a placeholder plant
+	static inline bool  liftBuriedPlants = true;    // fix plots planted with hanging decorations
 
 	static inline bool  requireSneak = true;    // must be sneaking when you drop the item
 	static inline bool  allowInteriors = true;  // allow planting inside buildings / caves

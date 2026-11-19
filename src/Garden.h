@@ -21,8 +21,9 @@ public:
 	void QueueCheckAllLoaded();
 
 	// Serialization
+	static constexpr std::uint32_t kRecordType = 'GRDN';
 	void Save(SKSE::SerializationInterface* a_intfc);
-	void Load(SKSE::SerializationInterface* a_intfc);
+	void LoadRecord(SKSE::SerializationInterface* a_intfc, std::uint32_t a_version);
 	void Revert();
 
 private:

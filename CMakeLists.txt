@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(PlantAnything VERSION 1.3.0 LANGUAGES CXX)
+project(PlantAnything VERSION 1.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -21,6 +21,8 @@ add_library(${PROJECT_NAME} SHARED
 	src/Garden.cpp
 	src/Events.cpp
 	src/Soil.cpp
+	src/SoilPlants.cpp
+	src/Fixups.cpp
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE src)

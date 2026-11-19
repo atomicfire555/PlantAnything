@@ -70,6 +70,8 @@ void Config::Load()
 		try {
 			if (key == "bpatchfertilesoil") patchFertileSoil = ParseBool(val);
 			else if (key == "benabledropplanting") enableDropPlanting = ParseBool(val);
+			else if (key == "bsoilallingredients") soilAllIngredients = ParseBool(val);
+			else if (key == "bliftburiedplants") liftBuriedPlants = ParseBool(val);
 			else if (key == "sskipplanterlists") skippedPlanterLists = SplitList(val);
 			else if (key == "brequiresneak") requireSneak = ParseBool(val);
 			else if (key == "ballowinteriors") allowInteriors = ParseBool(val);
@@ -93,7 +95,8 @@ void Config::Load()
 		}
 	}
 
-	spdlog::info("Config: fertileSoil={} dropPlanting={}", patchFertileSoil, enableDropPlanting);
+	spdlog::info("Config: fertileSoil={} allIngredients={} liftBuried={} dropPlanting={}",
+		patchFertileSoil, soilAllIngredients, liftBuriedPlants, enableDropPlanting);
 	spdlog::info("Config: sneak={} interiors={} trees={} food={} potions={} random={} uproot={} regrowDays={} sproutDelay={}",
 		requireSneak, allowInteriors, includeTrees, includeFood, includePotions, randomVariant, allowUproot, regrowDays, sproutDelay);
 }
